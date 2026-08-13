@@ -1,0 +1,291 @@
+import json
+from io import BytesIO
+from typing import Dict, List, Tuple, Union, Optional
+from datetime import datetime, timedelta
+
+import aiofiles
+from PIL import Image, UnidentifiedImageError
+from aiohttp import ClientSession, ClientTimeout, ClientConnectionError
+
+from gsuid_core.logger import logger
+
+from .utils import get_file
+from ..constant import PREFIX_DATA, code_id_dict
+from ...stock_config.stock_config import STOCK_CONFIG
+
+SEARCHAPI_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/148.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8,"
+        "application/signed-exchange;v=b3;q=0.7"
+    ),
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,zh-TW;q=0.7",
+    "Cache-Control": "max-age=0",
+    "Dnt": "1",
+    "Sec-Ch-Ua": '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
+def _get_searchapi_headers() -> Dict[str, str]:
+    """构建 searchapi 请求头，注入配置中的 Cookie。"""
+    headers = dict(SEARCHAPI_HEADERS)
+    cookies = STOCK_CONFIG.get_config("eastmoney_cookie").data
+    if cookies:
+        headers["Cookie"] = cookies
+    return headers
+
+
+async def get_fund_pos_list(fcode: Union[str, int]) -> Optional[Dict[str, object]]:
+    _api = "https://fundwebapi.eastmoney.com/FundMEApi/FundPositionList"
+    params = {
+        "pageIndex": "1",
+        "pageSize": "10",
+        "deviceid": "1234567.py.service",
+        "version": "4.3.0",
+        "product": "Eastmoney",
+        "plat": "Web",
+        "FCODE": str(fcode),
+    }
+    async with ClientSession() as sess:
+        try:
+            async with sess.get(_api, params=params) as res:
+                if res.status == 200:
+                    data = await res.json()
+                    logger.info(f"[SayuStock]获取{params['FCODE']}持仓数据成功")
+                    return data
+        except ClientConnectionError:
+            logger.warning(f"[SayuStock]获取{params['FCODE']}持仓数据失败")
+    return None
+
+
+def _code_query_candidates(raw: str) -> List[str]:
+    """拆分「600519 贵州茅台」等复合查询，优先纯代码再名称。"""
+    import re
+
+    text = (raw or "").strip()
+    if not text:
+        return []
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _add(s: str) -> None:
+        t = s.strip()
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+
+    # 代码优先：复合串先抽 6 位 / secid，再试原文与名称
+    for m in re.finditer(r"\b([0-3]\.\d{6})\b", text):
+        _add(m.group(1))
+    for m in re.finditer(r"\b(\d{6})\b", text):
+        _add(m.group(1))
+    for part in re.split(r"[\s,，/|+\-—]+", text):
+        _add(part)
+    name_only = re.sub(r"[\d.\s,，/|+\-—]+", "", text)
+    _add(name_only)
+    _add(text)
+    return out
+
+
+async def get_code_id(code: str, priority: Optional[str] = None) -> Optional[Tuple[str, str, str]]:
+    """
+    生成东方财富股票专用的行情ID
+    code:可以是代码或简称或英文
+    """
+    candidates = _code_query_candidates(code)
+    if not candidates:
+        return None
+    # 复合 query 依次尝试；首个成功即返回
+    last: Optional[Tuple[str, str, str]] = None
+    for cand in candidates:
+        hit = await _get_code_id_one(cand, priority)
+        if hit is not None:
+            return hit
+        last = hit
+    return last
+
+
+async def _get_code_id_one(code: str, priority: Optional[str] = None) -> Optional[Tuple[str, str, str]]:
+    """单次解析行情 ID（不做复合 query 拆分）。"""
+    if code.endswith(".h"):
+        code = code[: -len(".h")]
+        priority = "h"
+    elif code.endswith(".hk"):
+        code = code[: -len(".hk")]
+        priority = "h"
+    elif code.endswith(".us"):
+        code = code[: -len(".us")]
+        priority = "us"
+    elif code.endswith(".kr"):
+        code = code[: -len(".kr")]
+        priority = "kr"
+    elif code.endswith(".a"):
+        code = code[: -len(".a")]
+        priority = "a"
+
+    if priority is not None:
+        priority = priority.lower()
+
+    is_bond = False
+    if code in ["us10y", "us30y", "us2y", "cn10y", "cn30y", "cn2y", "tlm"]:
+        is_bond = True
+
+    if "." in code:
+        code_prefix, main_code = code.split(".", 1)
+        if code_prefix in PREFIX_DATA:
+            _sec_type = PREFIX_DATA[code_prefix]
+        else:
+            _sec_type = "未知"
+        # 按代码细化 A 股版块标签（创业板/科创板/京A），供标题展示
+        if code_prefix in ("0", "1"):
+            if main_code.startswith("300"):
+                _sec_type = "创业板"
+            elif main_code.startswith("688"):
+                _sec_type = "科创板"
+            elif main_code.startswith(("4", "8", "92")):
+                _sec_type = "京A"
+            elif code_prefix == "0":
+                _sec_type = "深A"
+            elif code_prefix == "1":
+                _sec_type = "沪A"
+
+        return code, "", _sec_type
+
+    if code in code_id_dict.keys():
+        return code_id_dict[code], code, ""
+
+    url = "https://searchapi.eastmoney.com/api/suggest/get"
+    params = (
+        ("input", f"{code}"),
+        ("type", "14"),
+        # ("token", "D43BF722C8E33BDC906FB84D85E326E8"),
+        ("count", "4"),
+    )
+    async with ClientSession(headers=_get_searchapi_headers(), timeout=ClientTimeout(total=15)) as sess:
+        try:
+            async with sess.get(url, params=params) as res:
+                if res.status == 200:
+                    logger.debug(f"[SayuStock]开始获取{code}的ID")
+                    text = await res.text()
+                    logger.debug(text)
+                    data = json.loads(text)
+                    code_dict: List[Dict] = data["QuotationCodeTable"]["Data"]
+                    if code_dict:
+                        # 排序：SecurityTypeName为"债券"的排到最后
+                        if not is_bond:
+                            code_dict.sort(key=lambda x: x.get("SecurityTypeName") == "债券")
+                        for i in code_dict:
+                            if priority is None:
+                                return (
+                                    i["QuoteID"],
+                                    i["Name"],
+                                    i["SecurityTypeName"],
+                                )
+                            elif priority == "h":
+                                if i["SecurityTypeName"] in ["港股"]:
+                                    return (
+                                        i["QuoteID"],
+                                        i["Name"],
+                                        i["SecurityTypeName"],
+                                    )
+                            elif priority == "us":
+                                if i["SecurityTypeName"] in ["美股", "粉单"]:
+                                    return (
+                                        i["QuoteID"],
+                                        i["Name"],
+                                        i["SecurityTypeName"],
+                                    )
+                            elif priority == "kr":
+                                if i["SecurityTypeName"] in ["韩股"]:
+                                    return (
+                                        i["QuoteID"],
+                                        i["Name"],
+                                        i["SecurityTypeName"],
+                                    )
+                            elif priority == "a":
+                                if i["SecurityTypeName"] in [
+                                    "沪深A",
+                                    "沪A",
+                                    "深A",
+                                    "创业板",
+                                    "科创板",
+                                    "京A",
+                                ]:
+                                    return (
+                                        i["QuoteID"],
+                                        i["Name"],
+                                        i["SecurityTypeName"],
+                                    )
+                        else:
+                            return (
+                                code_dict[0]["QuoteID"],
+                                code_dict[0]["Name"],
+                                i["SecurityTypeName"],
+                            )
+                    else:
+                        return None
+        except ClientConnectionError as error:
+            logger.error(f"[SayuStock] 获取{code}的ID失败: {error}")
+            return None
+        except Exception as error:
+            logger.error(f"[SayuStock] 获取{code}的ID异常: {error}")
+            return None
+    return None
+
+
+async def get_image_from_em(
+    name: str = "0.899001",
+    size: Optional[Tuple[int, int]] = None,
+) -> Image.Image:
+    WEBPIC = "https://webquotepic.eastmoney.com/GetPic.aspx"
+    url = f"{WEBPIC}?nid={name}&imageType=FFRST&type=ffr"
+
+    file = get_file(name, "png")
+    if file.exists():
+        # 检查文件的修改时间是否在一分钟以内
+        minutes = int(STOCK_CONFIG.get_config("mapcloud_refresh_minutes").data)
+        file_mod_time = datetime.fromtimestamp(file.stat().st_mtime)
+        if datetime.now() - file_mod_time < timedelta(minutes=minutes):
+            logger.info(f"[SayuStock] image文件在{minutes}分钟内，直接返回文件数据。")
+            try:
+                img = Image.open(file)
+                if size:
+                    return img.resize(size)
+                return img
+            except UnidentifiedImageError:
+                logger.warning(f"[SayuStock]{name}已存在文件读取失败, 尝试重新下载...")
+
+    async with ClientSession() as sess:
+        try:
+            logger.info(f"[SayuStock]开始下载: {name} | 地址: {url}")
+            async with sess.get(url) as res:
+                if res.status == 200:
+                    content = await res.read()
+                    logger.info(f"[SayuStock]下载成功: {name}")
+                else:
+                    logger.warning(f"[SayuStock]{name}下载失败")
+                    return Image.new("RGBA", (256, 256))
+        except ClientConnectionError:
+            logger.warning(f"[SayuStock]{name}下载失败")
+            return Image.new("RGBA", (256, 256))
+
+    async with aiofiles.open(str(file), "wb") as f:
+        await f.write(content)
+        stream = BytesIO(content)
+        if size:
+            return Image.open(stream).resize(size)
+        else:
+            return Image.open(stream)

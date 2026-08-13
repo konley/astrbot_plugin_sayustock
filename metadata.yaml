@@ -1,0 +1,32 @@
+name: astrbot_plugin_sayustock
+display_name: 早柚股票
+short_desc: SayuStock 完整移植 — 云图/个股K线/自选/对比/分析/新闻
+desc: >
+  基于 KimigaiiWuyi/SayuStock 原仓库业务代码 + gsuid_core 兼容层的 AstrBot 插件。
+  指令与上游 help.json 对齐：大盘概览、全天候、大盘/行业/概念云图、个股分时K线、
+  对比个股、自选、PE/PB/股息率对比、技术分析/卡片/选股、雪球新闻订阅等。
+version: 1.1.0
+author: konley
+repo: https://github.com/KimigaiiWuyi/SayuStock
+homepage: https://github.com/KimigaiiWuyi/SayuStock
+astrbot_version: ">=4.5.0"
+tags:
+  - 股票
+  - SayuStock
+  - A股
+  - 云图
+  - K线
+help: |
+  股票帮助
+  大盘概览 / 全天候
+  大盘云图 / 行业云图 xx / 概念云图 xx
+  个股 茅台 / 个股 日k 600519
+  对比个股 A B
+  添加自选 / 我的自选 / 删除自选
+  市盈率对比 / 市净率对比
+  技术分析 / 股票卡片 / 自动选股
+  订阅雪球新闻
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - telegram

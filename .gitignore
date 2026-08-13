@@ -1,0 +1,38 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+.DS_Store
+
+# runtime / local only
+data/
+*.db
+*.sqlite
+*.sqlite3
+tmp/
+help_t2i/
+*.log
+
+# secrets & local machine config (never commit)
+**/config.json
+**/*_config.json
+**/secrets*
+**/credentials*
+**/.astrbot*
+
+# IDE
+.idea/
+.vscode/
+*.swp

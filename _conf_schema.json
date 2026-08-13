@@ -1,0 +1,84 @@
+{
+  "market_aliases": {
+    "description": "大盘概览触发别名",
+    "type": "string",
+    "default": "大盘,盘面,今日大盘",
+    "hint": "逗号分隔；匹配后等同「大盘概览」。原词始终有效"
+  },
+  "cloudmap_aliases": {
+    "description": "大盘云图触发别名",
+    "type": "string",
+    "default": "云图,热力图,A股云图",
+    "hint": "逗号分隔；匹配后等同「大盘云图」。原词始终有效"
+  },
+  "allweather_aliases": {
+    "description": "全天候触发别名",
+    "type": "string",
+    "default": "",
+    "hint": "可选，逗号分隔"
+  },
+  "push_enable": {
+    "description": "开启定时推送",
+    "type": "bool",
+    "default": false,
+    "hint": "总开关。推荐：开盘/午间/收盘推大盘，收盘后再推云图（见下方 Cron 默认）"
+  },
+  "push_whitelist_groups": {
+    "description": "推送白名单群号",
+    "type": "list",
+    "default": [],
+    "hint": "仅这些群会收到定时推送与（若开启过滤的）新闻。每行一个群号。本地实例配置，不会写进插件源码"
+  },
+  "push_overview_cron": {
+    "description": "大盘概览 Cron",
+    "type": "string",
+    "default": "30 9,11,15 * * 1-5",
+    "hint": "推荐工作日 09:30 开盘 / 11:30 午间 / 15:00 收盘。格式：分 时 日 月 周。留空=不推"
+  },
+  "push_cloudmap_cron": {
+    "description": "大盘云图 Cron",
+    "type": "string",
+    "default": "5 15 * * 1-5",
+    "hint": "推荐工作日 15:05（收盘后，数据较全；云图较重勿过于频繁）。留空=不推"
+  },
+  "push_allweather_cron": {
+    "description": "全天候 Cron",
+    "type": "string",
+    "default": "0 8 * * 1-5",
+    "hint": "推荐工作日 08:00（开盘前看外盘/商品）。也可 21:00 看美盘。留空=不推"
+  },
+  "push_platform": {
+    "description": "推送平台 ID（可空）",
+    "type": "string",
+    "default": "",
+    "hint": "留空自动选 aiocqhttp"
+  },
+  "mapcloud_viewport": {
+    "description": "大盘云图分辨率",
+    "type": "int",
+    "default": 2500,
+    "hint": "Playwright 截图视口 1000~3000"
+  },
+  "mapcloud_scale": {
+    "description": "云图缩放倍数",
+    "type": "int",
+    "default": 2,
+    "hint": "1~3"
+  },
+  "mapcloud_refresh_minutes": {
+    "description": "云图缓存刷新(分钟)",
+    "type": "int",
+    "default": 3
+  },
+  "stock_cache_retention_days": {
+    "description": "缓存保留天数",
+    "type": "int",
+    "default": 7
+  },
+  "eastmoney_cookie": {
+    "description": "东财 Cookie（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "接口被拦时再填；勿提交到 git"
+  }
+}
