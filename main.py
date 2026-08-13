@@ -20,10 +20,10 @@ if str(_ROOT) not in sys.path:
 
 # package-relative first (AstrBot loads as data.plugins....), flat fallback for tests
 try:
-    from .help_card import HELP_MARKDOWN, HELP_PLAIN, render_help_t2i
+    from .help_card import build_help_markdown, build_help_plain, render_help_t2i
     from .push_service import PushService, parse_csv_aliases, parse_list
 except ImportError:
-    from help_card import HELP_MARKDOWN, HELP_PLAIN, render_help_t2i
+    from help_card import build_help_markdown, build_help_plain, render_help_t2i
     from push_service import PushService, parse_csv_aliases, parse_list
 
 HELP_TRIGGERS = {
@@ -380,17 +380,38 @@ class SayuStockPlugin(Star):
                     texts.append(str(t))
             return MessageChain().message("\n".join(texts) if texts else "")
 
+    def _current_aliases(self) -> tuple[list[str], list[str], list[str]]:
+        """Prefer live config (WebUI may change without restart)."""
+        self._reload_aliases()
+        return (
+            list(self._market_aliases),
+            list(self._cloudmap_aliases),
+            list(self._allweather_aliases),
+        )
+
     async def _send_help(self, event: AstrMessageEvent):
         assert self._data_dir is not None
+        m_alias, c_alias, a_alias = self._current_aliases()
+        md = build_help_markdown(
+            market_aliases=m_alias,
+            cloudmap_aliases=c_alias,
+            allweather_aliases=a_alias,
+        )
+        plain = build_help_plain(
+            market_aliases=m_alias,
+            cloudmap_aliases=c_alias,
+            allweather_aliases=a_alias,
+        )
         cache = self._data_dir / "help_t2i"
-        path = await render_help_t2i(cache, HELP_MARKDOWN)
+        # bust stale cache files when aliases change
+        path = await render_help_t2i(cache, md)
         if path:
             try:
                 yield event.chain_result([Comp.Image(file=path)])
                 return
             except Exception as e:
                 logger.warning("[%s] help image send fail: %s", PLUGIN, e)
-        yield event.plain_result(HELP_PLAIN)
+        yield event.plain_result(plain)
 
     # ── message router ────────────────────────────
 
