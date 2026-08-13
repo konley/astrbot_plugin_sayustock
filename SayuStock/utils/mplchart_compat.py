@@ -2,17 +2,18 @@
 
 旧版（如 0.0.37）与新版（如 0.0.46+）有多处 API 差异：
 
-- ``Price``：旧版在 ``mplchart.primitives`` 中；新版已移除，改用 ``LinePlot`` 画单列。
-- ``Chart(bgcolor=...)``：新版构造器不再接受 ``bgcolor``（背景色改走 matplotlib rc / style）。
-- ``chart.add_legends()`` / ``chart.main_axes()``：新版迁到 ``chart.canvas`` 上。
+- ``Price``：旧版在 ``mplchart.primitives`` 中；新版已移除，改用 ``LinePlot``。
+- ``Chart(bgcolor=..., color_scheme=...)``：新版已弃用/忽略，须走 ``style=``。
+- ``chart.add_legends()`` / ``chart.main_axes()``：新版迁到 ``chart.canvas``。
 
-业务代码统一从本模块导入 ``Chart`` / ``Price`` 等符号，即可同时跑通两套版本。
+业务代码统一从本模块导入 ``Chart`` / ``Price`` 等符号。
 """
 
 from __future__ import annotations
 
 import inspect
-from typing import Any, cast
+import warnings
+from typing import Any, Mapping, cast
 
 from mplchart import primitives as _mpl_primitives
 from mplchart.chart import Chart as _MplChart
@@ -26,9 +27,7 @@ from mplchart.primitives import (
     Candlesticks,
 )
 
-# getattr：新版 stubs/包里可能没有 Price，避免 reportAttributeAccessIssue
 _NativePrice = cast("type[LinePlot] | None", getattr(_mpl_primitives, "Price", None))
-
 
 __all__ = [
     "BarPlot",
@@ -45,7 +44,7 @@ __all__ = [
 
 
 class _PriceCompat(LinePlot):
-    """新版 mplchart 无 Price 时的兼容实现：等价于画指定价格列的 LinePlot。"""
+    """新版 mplchart 无 Price 时的兼容实现。"""
 
     def __init__(
         self,
@@ -55,15 +54,75 @@ class _PriceCompat(LinePlot):
         alpha: float = 1.0,
         color: str | None = None,
     ) -> None:
-        # 列名作为 indicator 传入：新旧 DataView/calc 都能按列解析
         super().__init__(item, width=width, alpha=alpha, color=color, label=str(item))
 
 
-# 统一导出名 Price：有原生类用原生，否则用兼容实现（避免 class 重定义触发 no-redef）
 Price: type[LinePlot] = _NativePrice if _NativePrice is not None else _PriceCompat
 
-
 _CHART_INIT_PARAMS = inspect.signature(_MplChart.__init__).parameters
+_SUPPORTS_STYLE = "style" in _CHART_INIT_PARAMS
+_SUPPORTS_BGCOLOR = "bgcolor" in _CHART_INIT_PARAMS
+_SUPPORTS_COLOR_SCHEME = "color_scheme" in _CHART_INIT_PARAMS
+
+
+def _build_dark_style(
+    bgcolor: str | None,
+    color_scheme: Any,
+) -> dict[str, Any]:
+    """Map legacy bgcolor/color_scheme → mplchart style spec (dark CN A-share look)."""
+    bg = bgcolor or "#050505"
+    scheme: dict[str, Any] = {}
+    if isinstance(color_scheme, Mapping):
+        scheme = dict(color_scheme)
+    elif color_scheme:
+        try:
+            scheme = dict(color_scheme)
+        except Exception:
+            scheme = {}
+
+    up = scheme.get("colorup") or scheme.get("up") or "#e74c3c"
+    down = scheme.get("colordn") or scheme.get("down") or "#00b050"
+    text = scheme.get("text") or "#f5f5f5"
+    grid = scheme.get("grid") or "#555555"
+    bg = scheme.get("bgcolor") or bg
+
+    settings: dict[str, Any] = {
+        "yaxis.right": True,
+        "candle.up.color": up,
+        "candle.down.color": down,
+        "candle.alpha": 0.95,
+        "ohlc.up.color": up,
+        "ohlc.down.color": down,
+        "volume.up.color": up,
+        "volume.down.color": down,
+        "volume.alpha": 0.45,
+    }
+    # optional boll band fill keys from scheme (label -> color)
+    for key, val in scheme.items():
+        if isinstance(key, str) and key.startswith("BOLL") and isinstance(val, str):
+            # not a standard setting; keep for potential future alias use
+            settings[f"overlay.{key}.color"] = val
+
+    return {
+        "stylesheet": "dark_background",
+        "rc": {
+            "axes.grid": True,
+            "axes.facecolor": bg,
+            "figure.facecolor": bg,
+            "savefig.facecolor": bg,
+            "axes.edgecolor": "#888888",
+            "axes.labelcolor": text,
+            "xtick.color": text,
+            "ytick.color": text,
+            "text.color": text,
+            "grid.color": grid,
+            "grid.alpha": 0.55,
+            "legend.facecolor": bg,
+            "legend.edgecolor": "#444444",
+            "legend.labelcolor": text,
+        },
+        "settings": settings,
+    }
 
 
 class Chart(_MplChart):
@@ -87,6 +146,12 @@ class Chart(_MplChart):
         color_scheme: Any = (),
         **extra: Any,
     ) -> None:
+        # 新版：color_scheme 被忽略 → 合成 style，保证深色底 + 红涨绿跌
+        if _SUPPORTS_STYLE and style is None and (
+            bgcolor is not None or color_scheme not in (None, (), {})
+        ):
+            style = _build_dark_style(bgcolor, color_scheme)
+
         init_kwargs: dict[str, Any] = {
             "title": title,
             "max_bars": max_bars,
@@ -96,23 +161,38 @@ class Chart(_MplChart):
             "figsize": figsize,
             "normalize": normalize,
             "raw_dates": raw_dates,
-            "color_scheme": color_scheme,
             "style": style,
-            "bgcolor": bgcolor,
             "holidays": holidays,
             **extra,
         }
-        # 只透传当前已安装 mplchart 实际支持的参数，避免新版因 bgcolor 等直接 TypeError
-        filtered = {key: value for key, value in init_kwargs.items() if key in _CHART_INIT_PARAMS and value is not None}
-        # color_scheme 旧版默认 ()，需要保留空映射语义；新版虽弃用但仍接受
-        if "color_scheme" in _CHART_INIT_PARAMS and "color_scheme" not in filtered:
-            filtered["color_scheme"] = color_scheme
-        # normalize / raw_dates 是 bool，False 也要传
+        if _SUPPORTS_BGCOLOR and bgcolor is not None:
+            init_kwargs["bgcolor"] = bgcolor
+        if _SUPPORTS_COLOR_SCHEME:
+            init_kwargs["color_scheme"] = color_scheme
+
+        filtered = {
+            key: value
+            for key, value in init_kwargs.items()
+            if key in _CHART_INIT_PARAMS and value is not None
+        }
         for flag in ("normalize", "raw_dates"):
             if flag in _CHART_INIT_PARAMS:
-                filtered[flag] = init_kwargs[flag]
+                filtered[flag] = init_kwargs.get(flag, False)
 
-        super().__init__(prices, **filtered)
+        # 抑制新版对 color_scheme 的弃用警告（我们已转 style）
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            super().__init__(prices, **filtered)
+
+        # 双保险：部分版本 style 未完全落到 figure
+        if bgcolor or (isinstance(color_scheme, Mapping) and color_scheme.get("bgcolor")):
+            bg = bgcolor or color_scheme.get("bgcolor")  # type: ignore[union-attr]
+            try:
+                self.figure.set_facecolor(bg)
+                for ax in self.figure.axes:
+                    ax.set_facecolor(bg)
+            except Exception:
+                pass
 
     def add_legends(self) -> Any:
         method = getattr(_MplChart, "add_legends", None)
