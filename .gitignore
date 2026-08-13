@@ -36,3 +36,4 @@ help_t2i/
 .idea/
 .vscode/
 *.swp
+data/
