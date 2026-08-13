@@ -59,7 +59,7 @@ async def send_stock_PE_info(bot: Bot, ev: Event) -> None:
         start_time,
         end_time,
     )
-    await bot.send(im)
+    await _send_compare_result(bot, im)
 
 
 @sv_stock_sina.on_prefix(
@@ -94,7 +94,7 @@ async def send_stock_PB_info(bot: Bot, ev: Event) -> None:
         start_time,
         end_time,
     )
-    await bot.send(im)
+    await _send_compare_result(bot, im)
 
 
 @sv_stock_sina.on_prefix(
@@ -129,4 +129,13 @@ async def send_stock_DY_info(bot: Bot, ev: Event) -> None:
         start_time,
         end_time,
     )
+    await _send_compare_result(bot, im)
+
+
+async def _send_compare_result(bot: Bot, im: object) -> None:
+    """支持 str / bytes / [notice, image] 多种返回。"""
+    if isinstance(im, list):
+        for part in im:
+            await bot.send(part)
+        return
     await bot.send(im)

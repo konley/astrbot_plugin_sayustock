@@ -546,35 +546,88 @@ class EastMoneyRequester:
             标准估值序列字典：`rows` 为按日期升序排列的 `{date, value}` 列表；
             无数据或失败时返回错误文本。估值数据缓存 3 天。
         """
-        value_field = EASTMONEY_VALUE_FIELD_MAP[value_type]
-        params: Dict[str, str] = {
-            "reportName": "RPT_VALUEANALYSIS_DET",
-            "columns": "ALL",
-            "filter": f'(SECURITY_CODE="{code}")',
-            "pageNumber": "1",
-            "pageSize": "5000",
-            "sortColumns": "TRADE_DATE",
-            "sortTypes": "-1",
-            "source": "WEB",
-            "client": "WEB",
-        }
-        resp = await self.stock_request(EASTMONEY_VALUE_URL, params=params)
-        if isinstance(resp, int):
-            return f"[SayuStock] 错误代码: {resp}"
-        result = resp["result"] if resp["result"] else {"data": []}
-        rows: List[Dict[str, Any]] = result["data"]
-        date_value_map: Dict[str, float] = {}
-        for row in rows:
-            trade_date = row["TRADE_DATE"] if "TRADE_DATE" in row else None
-            raw_value = row[value_field] if value_field in row else None
-            if trade_date is None or raw_value is None:
-                continue
-            value = float(raw_value)
-            if value <= 0:
-                continue
-            date_value_map[str(trade_date)[:10]] = value
-        if not date_value_map:
+        if value_type == "dy":
+            # 股息率走专用逻辑，不在此处理
             return f"❌未获取到{EASTMONEY_VALUE_NAME_MAP[value_type]}历史数据，可能该标的不支持东方财富估值接口。"
+
+        is_hk = (
+            str(secid).startswith("116.")
+            or "港" in str(sec_type)
+            or str(sec_type).upper() in {"HK", "HKG"}
+        )
+        date_value_map: Dict[str, float] = {}
+
+        if is_hk:
+            # 港股：RPT_VALUEANALYSIS_DET 日频为空，改用港股 F10 主要指标（报告期 PE_TTM/PB_TTM）
+            hk_field = "PE_TTM" if value_type == "pe" else "PB_TTM"
+            pure = code.zfill(5) if code.isdigit() and len(code) <= 5 else code
+            for filt in (
+                f'(SECUCODE="{pure}.HK")',
+                f'(SECURITY_CODE="{pure}")',
+            ):
+                params_hk: Dict[str, str] = {
+                    "reportName": "RPT_HKF10_FN_MAININDICATOR",
+                    "columns": "ALL",
+                    "filter": filt,
+                    "pageNumber": "1",
+                    "pageSize": "200",
+                    "sortColumns": "STD_REPORT_DATE",
+                    "sortTypes": "-1",
+                    "source": "WEB",
+                    "client": "WEB",
+                }
+                resp_hk = await self.stock_request(EASTMONEY_VALUE_URL, params=params_hk)
+                if isinstance(resp_hk, int):
+                    continue
+                result_hk = resp_hk.get("result") if isinstance(resp_hk, dict) else None
+                rows_hk: List[Dict[str, Any]] = []
+                if isinstance(result_hk, dict) and isinstance(result_hk.get("data"), list):
+                    rows_hk = result_hk["data"]
+                for row in rows_hk:
+                    trade_date = row.get("STD_REPORT_DATE") or row.get("REPORT_DATE")
+                    raw_value = row.get(hk_field)
+                    if trade_date is None or raw_value is None:
+                        continue
+                    try:
+                        value = float(raw_value)
+                    except (TypeError, ValueError):
+                        continue
+                    if value <= 0:
+                        continue
+                    date_value_map[str(trade_date)[:10]] = value
+                if date_value_map:
+                    break
+        else:
+            value_field = EASTMONEY_VALUE_FIELD_MAP[value_type]
+            params: Dict[str, str] = {
+                "reportName": "RPT_VALUEANALYSIS_DET",
+                "columns": "ALL",
+                "filter": f'(SECURITY_CODE="{code}")',
+                "pageNumber": "1",
+                "pageSize": "5000",
+                "sortColumns": "TRADE_DATE",
+                "sortTypes": "-1",
+                "source": "WEB",
+                "client": "WEB",
+            }
+            resp = await self.stock_request(EASTMONEY_VALUE_URL, params=params)
+            if isinstance(resp, int):
+                return f"[SayuStock] 错误代码: {resp}"
+            result = resp["result"] if resp.get("result") else {"data": []}
+            rows: List[Dict[str, Any]] = result.get("data") or []
+            for row in rows:
+                trade_date = row["TRADE_DATE"] if "TRADE_DATE" in row else None
+                raw_value = row[value_field] if value_field in row else None
+                if trade_date is None or raw_value is None:
+                    continue
+                value = float(raw_value)
+                if value <= 0:
+                    continue
+                date_value_map[str(trade_date)[:10]] = value
+
+        if not date_value_map:
+            tip = "港股无东财日频估值，季报指标亦为空" if is_hk else "可能该标的不支持东方财富估值接口"
+            return f"❌未获取到{name}({code})的{EASTMONEY_VALUE_NAME_MAP[value_type]}历史数据，{tip}。"
         sorted_rows = [{"date": date, "value": date_value_map[date]} for date in sorted(date_value_map)]
         return {
             "code": code,

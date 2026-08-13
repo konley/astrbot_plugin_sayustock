@@ -35,7 +35,7 @@ from ..stock_stockinfo.chart_base import (  # noqa: E402
 )
 
 ValueType = Literal["pe", "pb", "dy"]
-BotSendContent = Union[str, bytes]
+BotSendContent = Union[str, bytes, list]
 
 VALUE_NAME_MAP: dict[ValueType, str] = {
     "pe": EASTMONEY_VALUE_NAME_MAP["pe"],
@@ -190,7 +190,17 @@ async def get_eastmoney_pepb_compare(
     # AI注入必须发生在"数据已获取、图片未生成"的位置，确保AI能获得可分析的结构化文字。
     _ai_return_value_compare(series_list, failed, _type)
     image = await asyncio.to_thread(draw_value_compare_chart, series_list, _type)
-    return await convert_img(image)
+    img_bytes = await convert_img(image)
+    if failed:
+        # 部分标的失败时：先发提示再发图，避免「只剩一只却像对比图」
+        notice = (
+            f"⚠️ 以下标的未纳入{VALUE_NAME_MAP[_type]}对比（数据不可用已跳过）：\n"
+            + "、".join(failed)
+            + "\n说明：A 股用东财日频估值；港股等用季报/年报 PE_TTM·PB_TTM，"
+            "仍无数据时只能跳过。"
+        )
+        return [notice, img_bytes]
+    return img_bytes
 
 
 async def _fetch_sector_codes(board_code: str) -> list[str]:
