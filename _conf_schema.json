@@ -53,6 +53,28 @@
     "default": "",
     "hint": "留空自动选 aiocqhttp"
   },
+  "heatmap_site_url": {
+    "description": "热力图页面 URL",
+    "type": "string",
+    "default": "https://52etf.site/",
+    "hint": "大盘云图/热力图用原 a_heatmap 逻辑截此页，一般不用改"
+  },
+  "heatmap_viewport_width": {
+    "description": "热力图视口宽度",
+    "type": "int",
+    "default": 2560
+  },
+  "heatmap_viewport_height": {
+    "description": "热力图视口高度",
+    "type": "int",
+    "default": 1440
+  },
+  "heatmap_dpr": {
+    "description": "热力图截图 DPI 倍率",
+    "type": "float",
+    "default": 2,
+    "hint": "默认 2，越高越清晰、越吃内存"
+  },
   "mapcloud_viewport": {
     "description": "大盘云图分辨率",
     "type": "int",

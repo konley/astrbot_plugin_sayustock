@@ -22,9 +22,11 @@ if str(_ROOT) not in sys.path:
 try:
     from .help_card import build_help_markdown, build_help_plain, render_help_t2i
     from .push_service import PushService, parse_csv_aliases, parse_list
+    from .site_capture import SiteCaptureError, SiteHeatmapCapturer
 except ImportError:
     from help_card import build_help_markdown, build_help_plain, render_help_t2i
     from push_service import PushService, parse_csv_aliases, parse_list
+    from site_capture import SiteCaptureError, SiteHeatmapCapturer
 
 HELP_TRIGGERS = {
     "股票帮助",
@@ -73,6 +75,7 @@ class SayuStockPlugin(Star):
         self._market_aliases: List[str] = []
         self._cloudmap_aliases: List[str] = []
         self._allweather_aliases: List[str] = []
+        self._capturer: Optional[SiteHeatmapCapturer] = None
 
     async def initialize(self) -> None:
         try:
@@ -96,6 +99,14 @@ class SayuStockPlugin(Star):
 
             self._apply_config()
             self._reload_aliases()
+            self._capturer = SiteHeatmapCapturer(
+                url=str(_cfg(self.config, "heatmap_site_url", "https://52etf.site/") or "https://52etf.site/"),
+                viewport={
+                    "width": int(_cfg(self.config, "heatmap_viewport_width", 2560) or 2560),
+                    "height": int(_cfg(self.config, "heatmap_viewport_height", 1440) or 1440),
+                },
+                device_scale_factor=float(_cfg(self.config, "heatmap_dpr", 2) or 2),
+            )
 
             scheduler.start()
             self._setup_push()
@@ -163,6 +174,12 @@ class SayuStockPlugin(Star):
         if self._push:
             self._push.shutdown()
             self._push = None
+        if self._capturer:
+            try:
+                await self._capturer.close()
+            except Exception:
+                pass
+            self._capturer = None
         try:
             from gsuid_core.aps import scheduler
 
@@ -256,6 +273,10 @@ class SayuStockPlugin(Star):
                 raw_text=command,
             ),
         )
+        if getattr(handler.func, "__name__", "") == "send_cloudmap_img":
+            png = await self._capture_heatmap_bytes()
+            collected.append(png)
+            return collected
         ret = handler.func(bot, bot.event)
         if asyncio.iscoroutine(ret):
             ret = await ret
@@ -311,6 +332,29 @@ class SayuStockPlugin(Star):
                 return "全天候"
 
         return t
+
+    async def _capture_heatmap_bytes(self) -> bytes | str:
+        """原 a_heatmap：Playwright 截 52etf.site。"""
+        if self._capturer is None:
+            return "热力图截图组件未初始化。"
+        assert self._data_dir is not None
+        out = self._data_dir / "tmp" / f"heatmap_{int(time.time() * 1000)}.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            await self._capturer.capture_to_file(str(out))
+            raw = out.read_bytes()
+            try:
+                out.unlink(missing_ok=True)
+            except Exception:
+                pass
+            logger.info("[%s] 52etf heatmap ok bytes=%s", PLUGIN, len(raw))
+            return raw
+        except SiteCaptureError as e:
+            logger.error("[%s] 52etf capture fail: %s", PLUGIN, e)
+            return f"热力图获取失败（{e}）。可稍后重试。"
+        except Exception as e:
+            logger.exception("[%s] 52etf capture ex: %s", PLUGIN, e)
+            return f"热力图获取失败：{e}"
 
     def _is_help(self, text: str) -> bool:
         t = self._strip(text)
@@ -470,6 +514,21 @@ class SayuStockPlugin(Star):
             event.stop_event()
             async for r in self._send_help(event):
                 yield r
+            return
+
+        # 大盘云图 / 热力图：用原 a_heatmap 的 52etf 截图，不用 SayuStock 自绘
+        if getattr(handler.func, "__name__", "") == "send_cloudmap_img":
+            event.stop_event()
+            logger.info("[%s] heatmap 52etf capture sender=%s", PLUGIN, event.get_sender_id())
+            png = await self._capture_heatmap_bytes()
+            if isinstance(png, str):
+                yield event.plain_result(png)
+                return
+            path = await self._materialize_image(png)
+            if path:
+                yield event.chain_result([Comp.Image(file=path)])
+            else:
+                yield event.plain_result("热力图生成失败，请稍后重试。")
             return
 
         if getattr(sv, "area", "ALL") == "GROUP" and not self._group_id(event):
