@@ -60,13 +60,17 @@ class PushService:
             return
 
         self._sched = AsyncIOScheduler(timezone=TZ)
-        jobs = [
-            ("overview", "push_overview_cron", "大盘概览"),
-            ("cloudmap", "push_cloudmap_cron", "大盘云图"),
-            ("allweather", "push_allweather_cron", "全天候"),
+        # 大盘概览 + 热力图同一 Cron：各渲染一次，再分发到所有群
+        jobs: list[tuple[str, str, list[str]]] = [
+            ("overview", "push_overview_cron", ["大盘概览", "大盘云图"]),
+            ("allweather", "push_allweather_cron", ["全天候"]),
         ]
+        extra_hm = str(config.get("push_cloudmap_cron") or "").strip()
+        overview_cron = str(config.get("push_overview_cron") or "").strip()
+        if extra_hm and extra_hm != overview_cron:
+            jobs.append(("heatmap_extra", "push_cloudmap_cron", ["大盘云图"]))
         n = 0
-        for jid, cron_key, cmd in jobs:
+        for jid, cron_key, cmds in jobs:
             cron = str(config.get(cron_key) or "").strip()
             if not cron:
                 continue
@@ -76,8 +80,8 @@ class PushService:
                 logger.error("bad cron %s=%r: %s", cron_key, cron, e)
                 continue
 
-            async def _job(command=cmd, gids=list(groups), name=jid):
-                await self._execute(command, gids, name)
+            async def _job(commands=list(cmds), gids=list(groups), name=jid):
+                await self._execute(commands, gids, name)
 
             self._sched.add_job(
                 _job,
@@ -86,20 +90,27 @@ class PushService:
                 replace_existing=True,
             )
             n += 1
-            logger.info("push job %s cron=%s groups=%s", jid, cron, groups)
+            logger.info("push job %s cmds=%s cron=%s groups=%s", jid, cmds, cron, groups)
 
         if n:
             self._sched.start()
             self._started = True
             logger.info("push scheduler started jobs=%s", n)
 
-    async def _execute(self, command: str, groups: List[str], name: str) -> None:
-        logger.info("push fire name=%s cmd=%s", name, command)
-        try:
-            payloads = await self._run_command(command)
-        except Exception as e:
-            logger.exception("push run_command fail %s: %s", name, e)
-            return
+    async def _execute(self, commands: List[str], groups: List[str], name: str) -> None:
+        logger.info("push fire name=%s cmds=%s groups=%s", name, commands, groups)
+        payloads: List[Any] = []
+        for command in commands:
+            try:
+                part = await self._run_command(command)
+            except Exception as e:
+                logger.exception("push run_command fail %s %s: %s", name, command, e)
+                continue
+            if not part:
+                logger.warning("push %s cmd=%s empty", name, command)
+                continue
+            payloads.extend(part)
+            logger.info("push rendered cmd=%s payloads=%s (once, reuse all groups)", command, len(part))
         if not payloads:
             logger.warning("push %s empty result", name)
             return
