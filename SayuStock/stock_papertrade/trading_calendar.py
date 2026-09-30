@@ -13,60 +13,11 @@ from datetime import time, datetime, timedelta
 
 from gsuid_core.logger import logger
 
+from ..a_share_calendar import is_a_share_trading_day
 from ..utils.resource_path import DATA_PATH
 
 _CALENDAR_CACHE_PATH = DATA_PATH / "papertrade_trading_calendar.json"
 _CACHE_TTL_HOURS = 6  # 6 小时内的判断走缓存
-
-
-# 已知 2025-2026 A 股节假日（手动维护；遇到长假用户首次开机时拉一次大盘验证）
-# 工作日且不在此集合内 → 视为交易日
-_HARDCODED_HOLIDAYS_2025_2026 = {
-    # 2025 元旦
-    "2025-01-01",
-    # 2025 春节
-    "2025-01-28",
-    "2025-01-29",
-    "2025-01-30",
-    "2025-01-31",
-    "2025-02-03",
-    "2025-02-04",
-    "2025-02-05",
-    "2025-02-06",
-    "2025-02-07",
-    # 2025 清明
-    "2025-04-04",
-    "2025-04-05",
-    "2025-04-06",
-    # 2025 劳动节
-    "2025-05-01",
-    "2025-05-02",
-    "2025-05-05",
-    # 2025 端午
-    "2025-05-31",
-    "2025-06-02",
-    # 2025 中秋 + 国庆
-    "2025-10-01",
-    "2025-10-02",
-    "2025-10-03",
-    "2025-10-06",
-    "2025-10-07",
-    "2025-10-08",
-    # 2026 元旦
-    "2026-01-01",
-    "2026-01-02",
-    # 2026 春节
-    "2026-02-16",
-    "2026-02-17",
-    "2026-02-18",
-    "2026-02-19",
-    "2026-02-20",
-    "2026-02-23",
-    "2026-02-24",
-    "2026-02-25",
-    "2026-02-26",
-    "2026-02-27",
-}
 
 
 def _load_cache() -> dict:
@@ -92,33 +43,6 @@ def _save_cache(cache: dict) -> None:
             json.dump(cache, f, ensure_ascii=False, indent=2)
     except OSError as e:
         logger.warning(f"[SayuStock][PaperTrade] 写交易日历缓存失败: {e}")
-
-
-def _is_weekend(d: datetime) -> bool:
-    return d.weekday() >= 5  # 5=周六 6=周日
-
-
-def _is_holiday(d: datetime) -> bool:
-    return d.strftime("%Y-%m-%d") in _HARDCODED_HOLIDAYS_2025_2026
-
-
-def is_a_share_trading_day(dt: Optional[datetime] = None) -> bool:
-    """判断给定时间（默认现在）是否是 A 股交易日。
-
-    策略：
-    1. 周末 → False
-    2. 在 _HARDCODED_HOLIDAYS_2025_2026 中 → False
-    3. 否则 → True（工作日假设为交易日）
-
-    暂不实时拉大盘验证（避免每次心跳都发请求）；遇到节假日 cache miss 时
-    拉一次上证分时数据写回 cache。
-    """
-    d = dt or datetime.now()
-    if _is_weekend(d):
-        return False
-    if _is_holiday(d):
-        return False
-    return True
 
 
 def is_trading_time(dt: Optional[datetime] = None) -> bool:

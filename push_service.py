@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timezone, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Any, Awaitable, Callable, List, Optional
 
 logger = logging.getLogger("sayustock.push")
@@ -32,6 +32,34 @@ def parse_list(raw) -> List[str]:
 def parse_csv_aliases(raw, default: str = "") -> List[str]:
     text = (raw if raw is not None else default) or default
     return [x.strip() for x in str(text).replace("，", ",").split(",") if x.strip()]
+
+
+def split_cron_exprs(raw) -> List[str]:
+    text = str(raw or "").replace("；", ";")
+    out: List[str] = []
+    for chunk in text.split(";"):
+        for line in chunk.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                out.append(line)
+    return out
+
+
+def _beijing_now() -> datetime:
+    return datetime.now(TZ).replace(tzinfo=None)
+
+
+def is_a_share_push_day(now: Optional[datetime] = None) -> bool:
+    now = now or _beijing_now()
+    if now.tzinfo is not None:
+        now = now.astimezone(TZ).replace(tzinfo=None)
+    try:
+        from SayuStock.a_share_calendar import is_a_share_trading_day
+
+        return bool(is_a_share_trading_day(now))
+    except Exception as e:
+        logger.warning("trading calendar unavailable, weekday fallback: %s", e)
+        return now.weekday() < 5
 
 
 class PushService:
@@ -71,26 +99,26 @@ class PushService:
             jobs.append(("heatmap_extra", "push_cloudmap_cron", ["大盘云图"]))
         n = 0
         for jid, cron_key, cmds in jobs:
-            cron = str(config.get(cron_key) or "").strip()
-            if not cron:
-                continue
-            try:
-                trigger = CronTrigger.from_crontab(cron, timezone=TZ)
-            except Exception as e:
-                logger.error("bad cron %s=%r: %s", cron_key, cron, e)
-                continue
+            exprs = split_cron_exprs(config.get(cron_key))
+            for idx, cron in enumerate(exprs):
+                try:
+                    trigger = CronTrigger.from_crontab(cron, timezone=TZ)
+                except Exception as e:
+                    logger.error("bad cron %s=%r: %s", cron_key, cron, e)
+                    continue
 
-            async def _job(commands=list(cmds), gids=list(groups), name=jid):
-                await self._execute(commands, gids, name)
+                async def _job(commands=list(cmds), gids=list(groups), name=jid):
+                    await self._execute(commands, gids, name)
 
-            self._sched.add_job(
-                _job,
-                trigger,
-                id=f"sayustock_push_{jid}",
-                replace_existing=True,
-            )
-            n += 1
-            logger.info("push job %s cmds=%s cron=%s groups=%s", jid, cmds, cron, groups)
+                job_id = f"sayustock_push_{jid}" if len(exprs) == 1 else f"sayustock_push_{jid}_{idx}"
+                self._sched.add_job(
+                    _job,
+                    trigger,
+                    id=job_id,
+                    replace_existing=True,
+                )
+                n += 1
+                logger.info("push job %s cmds=%s cron=%s groups=%s", job_id, cmds, cron, groups)
 
         if n:
             self._sched.start()
@@ -98,6 +126,14 @@ class PushService:
             logger.info("push scheduler started jobs=%s", n)
 
     async def _execute(self, commands: List[str], groups: List[str], name: str) -> None:
+        now = _beijing_now()
+        if not is_a_share_push_day(now):
+            logger.info(
+                "push skip name=%s date=%s not A-share trading day",
+                name,
+                now.strftime("%Y-%m-%d"),
+            )
+            return
         logger.info("push fire name=%s cmds=%s groups=%s", name, commands, groups)
         payloads: List[Any] = []
         for command in commands:
