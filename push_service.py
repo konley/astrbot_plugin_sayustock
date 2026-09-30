@@ -127,6 +127,12 @@ class PushService:
 
     async def _execute(self, commands: List[str], groups: List[str], name: str) -> None:
         now = _beijing_now()
+        try:
+            from SayuStock.a_share_calendar import ensure_calendar
+
+            await asyncio.to_thread(ensure_calendar, now.year)
+        except Exception as e:
+            logger.warning("calendar refresh fail: %s", e)
         if not is_a_share_push_day(now):
             logger.info(
                 "push skip name=%s date=%s not A-share trading day",
